@@ -22,6 +22,9 @@ public class Constants {
  	public static final String LOAD_INSTRUCTION = "LOAD";
 	public static final String EX_OR_INSTRUCTION = "EX-OR";
 	public static final String STORE_INSTRUCTION = "STORE";
+	public static final String INTEGER_FU = "INTEGER";
+	public static final String MULTIPLY_FU = "MULTIPLY";
+	public static final String MEMORY_FU = "MEMORY";
 	public static final String SQUASH_INSTRUCTION = "SQUASH";
 	public static final int ONE_OPERAND_INSTRUCTION = 0;
 	public static final int TWO_OPERAND_INSTRUCTION = 1;

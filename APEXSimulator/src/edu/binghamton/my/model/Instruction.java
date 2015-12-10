@@ -1,6 +1,10 @@
 package edu.binghamton.my.model;
 
-public class IssueQueueEntry {
+public class Instruction {
+
+	private int pc;
+
+	private InstructionType opCode;
 
 	private boolean isValid;
 
@@ -12,11 +16,69 @@ public class IssueQueueEntry {
 
 	private String src1;
 
+	private Integer src1Value;
+
 	private boolean isSrc2Ready;
 
 	private String src2;
 
+	private Integer src2Value;
+
+	private boolean isDestReady;
+
 	private String destination;
+
+	private Integer destinationValue;
+
+	private int robSlotId;
+
+	public Integer getSrc1Value() {
+		return src1Value;
+	}
+
+	public void setSrc1Value(Integer src1Value) {
+		this.src1Value = src1Value;
+	}
+
+	public Integer getSrc2Value() {
+		return src2Value;
+	}
+
+	public void setSrc2Value(Integer src2Value) {
+		this.src2Value = src2Value;
+	}
+
+	public Integer getDestinationValue() {
+		return destinationValue;
+	}
+
+	public void setDestinationValue(Integer destinationValue) {
+		this.destinationValue = destinationValue;
+	}
+
+	public int getRobSlotId() {
+		return robSlotId;
+	}
+
+	public void setRobSlotId(int robSlotId) {
+		this.robSlotId = robSlotId;
+	}
+
+	public int getPc() {
+		return pc;
+	}
+
+	public void setPc(int pc) {
+		this.pc = pc;
+	}
+
+	public InstructionType getOpCode() {
+		return opCode;
+	}
+
+	public void setOpCode(InstructionType opCode) {
+		this.opCode = opCode;
+	}
 
 	public boolean isValid() {
 		return isValid;
@@ -80,6 +142,14 @@ public class IssueQueueEntry {
 
 	public void setDestination(String destination) {
 		this.destination = destination;
+	}
+
+	public boolean isDestReady() {
+		return isDestReady;
+	}
+
+	public void setDestReady(boolean isDestReady) {
+		this.isDestReady = isDestReady;
 	}
 
 }
