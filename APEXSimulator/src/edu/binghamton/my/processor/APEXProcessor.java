@@ -5,17 +5,16 @@ import static edu.binghamton.my.common.Utility.*;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Queue;
 
 import static edu.binghamton.my.common.Constants.*;
 
 import edu.binghamton.my.common.CircularQueue;
 import edu.binghamton.my.common.FileIO;
-import edu.binghamton.my.model.FunctionalUnitType;
 import edu.binghamton.my.model.Instruction;
 import edu.binghamton.my.model.InstructionType;
 import edu.binghamton.my.model.RenameTableEntry;
@@ -31,9 +30,11 @@ public class APEXProcessor {
 	private static Queue<Instruction> issueQueueIntegerFuLatch = new LinkedList<>();
 	private static Queue<Instruction> issueQueueMultiplyFuLatch = new LinkedList<>();
 	private static Queue<Instruction> lsqMemory1Latch = new LinkedList<>();
-	private static Queue<String> decodeExecuteLatch = new LinkedList<>();
-	private static Queue<String> executeMemoryLatch = new LinkedList<>();
-	private static Queue<String> memoryWriteBackLatch = new LinkedList<>();
+	private static Queue<Instruction> memory1memory2Latch = new LinkedList<>();
+	private static Queue<Instruction> memory2memory3Latch = new LinkedList<>();
+	private static Queue<Instruction> memoryForwardingLatch = new LinkedList<>();
+	private static Queue<Instruction> integerForwardingLatch = new LinkedList<>();
+	private static Queue<Instruction> multiplyForwardingLatch = new LinkedList<>();
 	private static List<String> instructionList = new ArrayList<>(PC);
 	private static Integer[] MEMORY_ARRAY = new Integer[10000];
 	private static String lastFetchedInstruction;
@@ -63,10 +64,18 @@ public class APEXProcessor {
 			MEMORY_ARRAY[i] = 0;
 
 		echo("Initialize Registers...");
-		for(String regName : REGISTER_FILE.keySet())
+		//R0 to R7
+		for(int i=0; i<8; i++) {
+			String regName = "R" + i;
 			REGISTER_FILE.put(regName, 0);
+			RenameTableEntry rte = new RenameTableEntry();
+			rte.setSrcBit(0);
+			rte.setRegisterSrc(null);
+			RENAME_TABLE.put(regName, rte);
+		}
 
 		echo("Reset flags...");
+		isMultiplyFuFree = true;
 		isFetch1Done = isFetch2Done = isDecodeDone = isExecuteDone = isMemoryDone = isWriteBackDone = false;
 		HALT_ALERT = false;
 		BRANCH_TAKEN = false;
@@ -87,9 +96,9 @@ public class APEXProcessor {
 				break;
 			}
 
-			doWriteBack();
+			doCommit();
+			doForwarding();
 			doExecution();
-			doSelection();
 			doDecode();
 			doFetch2();
 			doFetch1();
@@ -111,14 +120,45 @@ public class APEXProcessor {
 		}
 	}
 
+	private static void doCommit() {
+		//Check if instruction at ROB head has completed execution
+		//If yes then update the destination register value in PRF
+		//If not then do nothing
+		int headInstructionId = ROB.getHeadIndex();
+		boolean isReadyToCommit = false;
+		for(Instruction inst : ROB) {
+			if(inst.getRobSlotId() == headInstructionId) {
+				//Cannot remove entry from ROB while iterating
+				//So set a flag and remove entry at head out of iteration
+				isReadyToCommit = inst.isDestReady();
+				break;
+			}
+		}
+
+		if(isReadyToCommit) {
+			Instruction instruction = ROB.remove();
+			int destValue = instruction.getDestinationValue();
+			String destRegName = instruction.getDestRegName();
+			REGISTER_FILE.put(destRegName, destValue);
+			updateRenameTable(instruction, RENAME_TABLE, true);
+			if(STORE_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+				printQueue.add("--");
+			} else {
+				printQueue.add(destRegName + " = " + destValue);
+			}
+		} else {
+			printQueue.add("--");
+		}
+	}
+
 	private static void doFetch1() {
 		if(!fetchFetchLatch.isEmpty()) {
-			printQueue.add("Stall");
+			printQueue.add("--");
 		} else if(PC == instructionList.size()) {
 			isFetch1Done = true;
-			printQueue.add("Done");
+			printQueue.add("--");
 		} else {
-			if(PC > instructionList.size()) {
+			if(PC > instructionList.size()) {//PC is updated by BZ/BNZ/JUMP instructions
 				echo("Invalid PC value detected: " + PC);
 				INVALID_PC = true;
 			} else {
@@ -143,46 +183,29 @@ public class APEXProcessor {
 					if(JUMP_DETECTED)
 						JUMP_DETECTED = false;
 				}*/
-
-				printQueue.add(instruction.toString());
+				instruction.setStringRepresentation(temp);
+				printQueue.add(temp);
 			}
 		}		
 	}
 
-	private static Instruction getInstructionObject(String instruction) {
-		String[] parts = instruction.split(" ");
-		InstructionType type = InstructionType.getInstructionType(instruction);
-		FunctionalUnitType fuType = FunctionalUnitType.getFunctionalUnitType(type.getValue());
-
-		Instruction instructObj = new Instruction();
-		instructObj.setOpCode(type);
-		if(parts.length > 1)
-			instructObj.setDestination(parts[1]);
-
-		if(parts.length > 2)
-			instructObj.setSrc1(parts[2]);
-
-		if(parts.length > 3)
-			instructObj.setSrc2(parts[3]);
-
-		return instructObj;
-	}
-
 	private static void doFetch2() {
 		if(!fetchDecodeLatch.isEmpty()) {
-			printQueue.add("Stall");
-		} else {
-			Instruction instruction = fetchFetchLatch.poll();
-			if(instruction == null) {
-				if(isFetch1Done) {
-					isFetch2Done = true;
-				} else {
-					printQueue.add("Stall");
-				}
+			printQueue.add("--");
+			return;
+		}
+
+		Instruction instruction = fetchFetchLatch.poll();
+		if(instruction == null) {
+			if(isFetch1Done) {
+				isFetch2Done = true;
+				printQueue.add("--");
 			} else {
-				fetchDecodeLatch.add(instruction);
-				printQueue.add(instruction.toString());
+				printQueue.add("--");
 			}
+		} else {
+			fetchDecodeLatch.add(instruction);
+			printQueue.add(instruction.getStringRepresentation());
 		}
 	}
 
@@ -192,69 +215,77 @@ public class APEXProcessor {
 		//Dependency
 		//Read values from ARF/PRF
 		//Dispatch to IQ & LSQ
-		Instruction instruction = fetchDecodeLatch.poll();
-		if(instruction == null) {
+		if(fetchDecodeLatch.isEmpty()) {
 			if(isFetch2Done) {
 				isDecodeDone = true;
-				printQueue.add("Done");
+				printQueue.add("--");
 			} else {
-				printQueue.add("Stall");
+				printQueue.add("--");
 			}
-
 			return;
 		}
 		
-		//At this point instruction will not be null
-		//Do we need this condition of free phy. reg. for bz/bnz/jump/bal???
-		//
-		/**/
+		Instruction instruction = fetchDecodeLatch.poll();
+		InstructionType instructionType = instruction.getOpCode();
 
-		if(HALT_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+		if(HALT_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())) {
 			HALT_ALERT = true;
 			printQueue.add("HALT");
 			return;
 		}
 
-		InstructionType instructionType = instruction.getOpCode();
 		//If instruction type is LOAD/STORE && LSQ is full then stall
-		//else if instruction type is other than LOAD/STORE && IQ is full then stall
 		if((isLoadStoreInstruction(instructionType) && isLSQFull())) {
 			printQueue.add("LSQ Full");
 			fetchDecodeLatch.add(instruction);
 			return;
 		}
 
+		//If instruction type is other than LOAD/STORE && IQ is full then stall
 		if(!isLoadStoreInstruction(instructionType) && isIssueQueueFull()) {
 			printQueue.add("IQ Full");
 			fetchDecodeLatch.add(instruction);
 			return;
 		}
 
+		boolean issueToIQ = isInstructionForIssueIQ(instructionType);
+
 		switch (instruction.getOpCode()) {
+		case MOVC:
+			instruction.setSrc1Value(Integer.parseInt(instruction.getSrc1RegName()));
+			instruction.setSrc1Ready(true);
+			instruction.setValid(true);
+			dispatch(instruction, issueToIQ);
+			break;
+
 		case MOV:
-			//TODO: Fill entries in rename table
-			RenameTableEntry rmt = RENAME_TABLE.get(instruction.getSrc1());
-			Integer srcValue;
-			if(rmt.getSrcBit() == 0) { //Read values from register file
-				srcValue = REGISTER_FILE.get(instruction.getSrc1());
-				instruction.setSrc1Value(srcValue);
-				instruction.setSrc1Ready(true);
+			decode(instruction, true, false, false);
+			if(instruction.isSrc1Ready()) {
 				instruction.setValid(true);
-			} else {
-				Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(rmt.getRegisterSrc()));
-				if(robInstruction.isValid()) {
-					srcValue = robInstruction.getDestinationValue();
-					instruction.setSrc1Value(srcValue);
-					instruction.setSrc1Ready(true);
-					instruction.setValid(true);
-				} else {
-					instruction.setSrc1Value(robInstruction.getRobSlotId());
-					instruction.setSrc1Ready(false);
-					instruction.setValid(false);
-				}
 			}
-			dispatchToIQ(instruction);
-			dispatchToRob(instruction);
+			dispatch(instruction, issueToIQ);
+			break;
+
+		case ADD:
+		case SUB:
+		case MUL:
+		case AND:
+		case OR:
+		case EX_OR:
+			decode(instruction, true, true, false);
+			if(instruction.isSrc1Ready() && instruction.isSrc2Ready()) {
+				instruction.setValid(true);
+			}
+			dispatch(instruction, issueToIQ);
+			break;
+
+		case LOAD:
+		case STORE:
+			decode(instruction, true, true, true);
+			if(instruction.isSrc1Ready() && instruction.isSrc2Ready() && instruction.isDestReady()) {
+				instruction.setValid(true);
+			}
+			dispatch(instruction, issueToIQ);
 			break;
 
 		default:
@@ -272,89 +303,373 @@ public class APEXProcessor {
 		} else {
 			//Read register values from PRF
 		}*/
+		printQueue.add(instruction.getStringRepresentation());
 	}
 
-	private static void dispatchToRob(Instruction instruction) {
-		int robSlotId = ROB.getNextSlotIndex();
-		instruction.setRobSlotId(robSlotId);
-		ROB.add(instruction);
+	private static boolean isLiteral(String value) {
+		return value.charAt(0) != 'R';
 	}
 
-	private static void dispatchToIQ(Instruction instruction) {
-		ISSUE_QUEUE.add(instruction);
+	private static void decode(Instruction instruction, boolean decodeSrc1, boolean decodeSrc2, boolean decodeDest) {
+		if(decodeSrc1) {
+			String src1 = instruction.getSrc1RegName();
+			if(isLiteral(src1)) {
+				instruction.setSrc1Value(Integer.parseInt(src1));
+				instruction.setSrc1Ready(true);
+			} else {
+				RenameTableEntry regSrc1Rte = RENAME_TABLE.get(instruction.getSrc1RegName());
+				int srcValue = 0;
+				if(regSrc1Rte.getSrcBit() == 0) { //Read values from register file
+					srcValue = REGISTER_FILE.get(instruction.getSrc1RegName());
+					instruction.setSrc1Value(srcValue);
+					instruction.setSrc1Ready(true);
+				} else {
+					Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(regSrc1Rte.getRegisterSrc()), ROB);
+					if(robInstruction.isDestReady()) {
+						srcValue = robInstruction.getDestinationValue();
+						instruction.setSrc1Value(srcValue);
+						instruction.setSrc1Ready(true);
+					} else {
+						instruction.setSrc1Value(robInstruction.getRobSlotId());
+						instruction.setSrc1Ready(false);
+					}
+				}
+			}
+			
+		}
+
+		if(decodeSrc2) {
+			String src2 = instruction.getSrc2RegName();
+			if(isLiteral(src2)) {
+				instruction.setSrc2Value(Integer.parseInt(src2));
+				instruction.setSrc2Ready(true);
+			} else {
+				RenameTableEntry regSrc2Rte = RENAME_TABLE.get(instruction.getSrc2RegName());
+				
+				int srcValue;
+				if(regSrc2Rte.getSrcBit() == 0) { //Read values from register file
+					srcValue = REGISTER_FILE.get(instruction.getSrc2RegName());
+					instruction.setSrc2Value(srcValue);
+					instruction.setSrc2Ready(true);
+				} else {
+					Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(regSrc2Rte.getRegisterSrc()), ROB);
+					if(robInstruction.isDestReady()) {
+						srcValue = robInstruction.getDestinationValue();
+						instruction.setSrc2Value(srcValue);
+						instruction.setSrc2Ready(true);
+					} else {
+						instruction.setSrc2Value(robInstruction.getRobSlotId());
+						instruction.setSrc2Ready(false);
+					}
+				}
+			}
+		}
+
+		if(decodeDest) {
+			RenameTableEntry regDestRte = RENAME_TABLE.get(instruction.getDestRegName());
+			
+			int srcValue;
+			if(regDestRte.getSrcBit() == 0) { //Read values from register file
+				srcValue = REGISTER_FILE.get(instruction.getDestRegName());
+				instruction.setDestinationValue(srcValue);
+				//instruction.setDestReady(true);
+			} else {
+				Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(regDestRte.getRegisterSrc()), ROB);
+				if(robInstruction.isDestReady()) {
+					srcValue = robInstruction.getDestinationValue();
+					instruction.setDestinationValue(srcValue);
+					//instruction.setDestReady(true);
+				} else {
+					instruction.setDestinationValue(robInstruction.getRobSlotId());
+					//instruction.setDestReady(false);
+				}
+			}
+		}
 	}
 
-	private static Instruction getEntryFromROBBySlotId(int slotId) {
-		Iterator<Instruction> iterator = ROB.iterator();
+	private static boolean isInstructionForIssueIQ(InstructionType instructionType) {
+		return !isLoadStoreInstruction(instructionType);
+	}
 
-		while(iterator.hasNext()) {
-			Instruction instruction = iterator.next();
-			if(instruction.getRobSlotId() == slotId) {
-				return instruction;
+	private static void dispatch(Instruction instruction, boolean issueToIQ) {
+		if(issueToIQ) {
+			dispatchToIQ(instruction, ISSUE_QUEUE);
+		} else {
+			dispatchToLSQ(instruction, LSQ);
+		}
+
+		dispatchToRob(instruction, ROB);
+
+		if(STORE_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+			//In case of store all are register are read. So no need to update Rename Table
+		} else {
+			updateRenameTable(instruction, RENAME_TABLE, false);
+		}
+	}
+
+	private static void doForwarding() {
+		if(!memoryForwardingLatch.isEmpty()) {
+			forwardExecutionResults(memoryForwardingLatch.poll());
+		} else if(!integerForwardingLatch.isEmpty()) {
+			forwardExecutionResults(integerForwardingLatch.poll());
+		} else if(!multiplyForwardingLatch.isEmpty()) {
+			forwardExecutionResults(multiplyForwardingLatch.poll());
+		}
+	}
+
+	private static void forwardExecutionResults(Instruction instruction) {
+		for(Instruction robInst : ROB) {
+			if(!robInst.isValid()) {
+				if(!robInst.isSrc1Ready()) {
+					if(robInst.getSrc1Value() == instruction.getRobSlotId()) {
+						robInst.setSrc1Value(instruction.getDestinationValue());
+						robInst.setSrc1Ready(true);
+					}
+				}
+
+				if(!robInst.isSrc2Ready()) {
+					if(robInst.getSrc2Value() == instruction.getRobSlotId()) {
+						robInst.setSrc2Value(instruction.getDestinationValue());
+						robInst.setSrc2Ready(true);
+					}
+				}
+
+				if(robInst.getNoOfSources() == 1 && robInst.isSrc1Ready()) {
+					robInst.setValid(true);
+				} else if(robInst.getNoOfSources() == 2 && robInst.isSrc1Ready() && robInst.isSrc2Ready()) {
+					robInst.setValid(true);
+				}
+			}
+		}
+	}
+
+	private static void doExecution() {
+		doSelection();
+		executeMemory3();
+		executeMemory2();
+		executeMemory1();
+		executeMultiply();
+		executeInteger();
+	}
+
+	private static void executeInteger() {
+		if(issueQueueIntegerFuLatch.isEmpty()) {
+			if(ISSUE_QUEUE.isEmpty()) {
+				printQueue.add("--");
+			} else {
+				printQueue.add("--");
+			}
+			return;
+		}
+
+
+		Instruction intInst = issueQueueIntegerFuLatch.poll();
+		String opCode = intInst.getOpCode().getValue();
+		int result = 0;
+		switch (opCode) {
+		case MOV_INSTRUCTION:
+		case MOVC_INSTRUCTION:
+			result = intInst.getSrc1Value();
+			break;
+		case ADD_INSTRUCTION:
+			result = intInst.getSrc1Value() + intInst.getSrc2Value();
+			break;
+		case SUB_INSTRUCTION:
+			result = intInst.getSrc1Value() - intInst.getSrc2Value();
+			break;
+		case AND_INSTRUCTION:
+			result = intInst.getSrc1Value() & intInst.getSrc2Value();
+			break;
+		case OR_INSTRUCTION:
+			result = intInst.getSrc1Value() | intInst.getSrc2Value();
+			break;
+		case EX_OR_INSTRUCTION:
+			result = intInst.getSrc1Value() ^ intInst.getSrc2Value();
+			break;
+		default:
+			break;
+		}
+		intInst.setDestinationValue(result);
+		intInst.setDestReady(true);
+		intInst.setValid(true);
+
+		integerForwardingLatch.add(intInst);
+		printQueue.add(intInst.getStringRepresentation());
+	}
+
+	private static void executeMultiply() {
+		if(issueQueueMultiplyFuLatch.isEmpty()) {
+			if(ISSUE_QUEUE.isEmpty()) {
+				printQueue.add("--");
+			} else {
+				printQueue.add("--");
+			}
+			return;
+		}
+
+		Instruction mulInst = issueQueueMultiplyFuLatch.poll();
+		int latencyCount = mulInst.getMultiplyLatencyCount();
+		
+		if(latencyCount == 0) {
+			isMultiplyFuFree = false;
+			int result = mulInst.getSrc1Value() * mulInst.getSrc2Value();
+			mulInst.setDestinationValue(result);
+		}
+
+		latencyCount++;
+		mulInst.setMultiplyLatencyCount(latencyCount);
+		if(latencyCount == 4) {
+			isMultiplyFuFree = true;
+			mulInst.setDestReady(true);
+			mulInst.setValid(true);
+			multiplyForwardingLatch.add(mulInst);
+		} else {
+			issueQueueMultiplyFuLatch.add(mulInst);
+		}
+
+		printQueue.add(mulInst.getStringRepresentation());
+	}
+
+	private static void executeMemory3() {
+		if(memory2memory3Latch.isEmpty()) {
+			printQueue.add("--");
+			return;
+		}
+
+		Instruction loadStoreInst = memory2memory3Latch.poll();
+		loadStoreInst.setDestReady(true);
+		loadStoreInst.setValid(true);
+
+		if(LOAD_INSTRUCTION.equalsIgnoreCase(loadStoreInst.getOpCode().getValue())) {
+			int src1 = loadStoreInst.getSrc1Value();
+			int src2 = loadStoreInst.getSrc2Value();
+			int addr = src1 + src2;
+			int value = MEMORY_ARRAY[addr];
+			loadStoreInst.setDestinationValue(value);
+			REGISTER_FILE.put(loadStoreInst.getDestRegName(), value);//Update/Insert to Register file
+			memoryForwardingLatch.add(loadStoreInst);
+		} else {//Store instruction
+			int src1 = loadStoreInst.getSrc1Value();
+			int src2 = loadStoreInst.getSrc2Value();
+			int addr = src1 + src2;
+			MEMORY_ARRAY[addr] = loadStoreInst.getDestinationValue();//Update/Insert memory location
+			//No forwarding required in case of Store
+		}
+
+		printQueue.add(loadStoreInst.getStringRepresentation());
+	}
+	
+	private static void executeMemory2() {
+		if(memory1memory2Latch.isEmpty()) {
+			printQueue.add("--");
+			return;
+		}
+
+		Instruction inst = memory1memory2Latch.poll();
+		memory2memory3Latch.add(inst);
+		printQueue.add(inst.getStringRepresentation());
+	}
+
+	private static void executeMemory1() {
+		if(lsqMemory1Latch.isEmpty()) {
+			printQueue.add("--");
+			return;
+		}
+
+		Instruction loadStoreInst = lsqMemory1Latch.poll();
+		if(LOAD_INSTRUCTION.equalsIgnoreCase(loadStoreInst.getOpCode().getValue())) {
+			int src1 = loadStoreInst.getSrc1Value();
+			int src2 = loadStoreInst.getSrc2Value();
+			int addr = src1 + src2;
+			int value = MEMORY_ARRAY[addr];
+			REGISTER_FILE.put(loadStoreInst.getDestRegName(), value);//Update/Insert to Register file
+		} else {//Store instruction
+			int src1 = loadStoreInst.getSrc1Value();
+			int src2 = loadStoreInst.getSrc2Value();
+			int addr = src1 + src2;
+			MEMORY_ARRAY[addr] = loadStoreInst.getDestinationValue();//Update/Insert memory location
+		}
+
+		memory1memory2Latch.add(loadStoreInst);
+		printQueue.add(loadStoreInst.getStringRepresentation());
+	}
+
+	private static void doSelection() {
+		Instruction integerInstruction = selectIntegerInstructionFromIQ();
+		Instruction multiplyInstruction = selectMultiplyInstructionFromIQ();
+		Instruction memoryInstruction = selectInstructionForExecutionFromLSQ();
+
+		if(integerInstruction != null) {
+			//Go for execution
+			issueQueueIntegerFuLatch.add(integerInstruction);
+		}
+
+		if(multiplyInstruction != null) {
+			//Go for execution
+			issueQueueMultiplyFuLatch.add(multiplyInstruction);
+		}
+
+		if(memoryInstruction != null) {
+			//Go for execution
+			lsqMemory1Latch.add(memoryInstruction);
+		}
+
+	}
+
+	private static Instruction selectIntegerInstructionFromIQ() {
+		int instIndex = -1;
+		Instruction selectedInstruction = null;
+
+		for(int i = 0; i < ISSUE_QUEUE.size(); i++) {
+			Instruction inst = ISSUE_QUEUE.get(i);
+			String fuType = inst.getFuType().getValue();
+			if(inst.isValid() && INTEGER_FU.equalsIgnoreCase(fuType)) {
+				instIndex = i;
+				break;
+			}
+		}
+
+		if(instIndex != -1) {
+			 selectedInstruction = ISSUE_QUEUE.remove(instIndex);
+		}
+
+		return selectedInstruction;
+	}
+
+	private static Instruction selectMultiplyInstructionFromIQ() {
+		int instIndex = -1;
+		Instruction selectedInstruction = null;
+		for(int i = 0; i < ISSUE_QUEUE.size(); i++) {
+			Instruction inst = ISSUE_QUEUE.get(i);
+			String fuType = inst.getFuType().getValue();
+			if(inst.isValid() && MULTIPLY_FU.equalsIgnoreCase(fuType) && isMultiplyFuFree) {
+				instIndex = i;
+				break;
+			}
+		}
+
+		if(instIndex != -1) {
+			 selectedInstruction = ISSUE_QUEUE.remove(instIndex);
+		}
+
+		return selectedInstruction;
+	}
+
+	private static Instruction selectInstructionForExecutionFromLSQ() {
+		if(!LSQ.isEmpty()) {
+			Instruction inst = LSQ.get(0);
+			if(inst.isValid()) {
+				if(STORE_INSTRUCTION.equalsIgnoreCase(inst.getOpCode().getValue())) {
+					if(inst.getRobSlotId() == ROB.getHeadIndex()) {
+						return LSQ.remove(0);
+					}
+				} else {
+					return LSQ.remove(0);
+				}
 			}
 		}
 		return null;
 	}
-
-	/*private static String getRenamedInstruction(String instruction) {
-		InstructionType instructionType = InstructionType.getInstructionType(instruction);
-		String[] parts = instruction.split(" ");
-		if(isLoadStoreInstruction(instructionType)) {
-			//Handle renaming for load store separately
-			String dest = parts[1];
-			String op1 = parts[2];
-			String op2 = parts[3];
-			String renamedSrc1 = getMappedPhysicalRegister(op1);
-			String renamedSrc2 = op2;
-			String renamedDest;
-
-			if(!isLiteral(op2)) {
-				renamedSrc2 = getMappedPhysicalRegister(op2);
-			}
-
-			if(LOAD_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())) {
-				renamedDest = getFreePhysicalRegister();
-				ARCHITECTURAL_TO_PHYSICAL_MAP.put(dest, renamedDest);
-			} else {
-				renamedDest = getMappedPhysicalRegister(dest);
-			}
-
-			instruction = renamedDest + SPACE + renamedSrc1 + SPACE + renamedSrc2;
-		} else if(isBranchInstruction(instructionType)) {
-			//Handle branch instruction renaming here
-		} else {
-			String dest = parts[1];
-			String src1 = parts[2];
-			String src2 = parts[3];
-			String renamedSrc1 = getMappedPhysicalRegister(src1);
-			String renamedSrc2 = getMappedPhysicalRegister(src2);
-			String renamedDest = getFreePhysicalRegister();
-			instruction = renamedDest + SPACE + renamedSrc1 + SPACE + renamedSrc2;
-
-			//Add mapping for dest & renamedDest in map
-			ARCHITECTURAL_TO_PHYSICAL_MAP.put(dest, renamedDest);
-		}
-		return instruction;
-	}
-
-	private static boolean isLiteral(String op2) {
-		return 'R' != (op2.charAt(0));
-	}
-
-	private static String getFreePhysicalRegister() {
-		return	FREE_PHYSICAL_REGISTER_LIST.remove(0);
-	}
-
-	private static String getMappedPhysicalRegister(String srcArchitecturalRegister) {
-		return ARCHITECTURAL_TO_PHYSICAL_MAP.get(srcArchitecturalRegister);
-	}
-
-	private static boolean isBranchInstruction(InstructionType instructionType) {
-		return (BZ_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())
-				|| BNZ_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())
-				|| BAL_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())
-				|| JUMP_INSTRUCTION.equalsIgnoreCase(instructionType.getValue()));
-	}*/
 
 	private static boolean isLSQFull() {
 		return LSQ.size() == MAX_LSQ_SIZE;
@@ -365,92 +680,8 @@ public class APEXProcessor {
 				|| STORE_INSTRUCTION.equalsIgnoreCase(instructionType.getValue()));
 	}
 
-	/*private static boolean isFreePhysicalRegisterAvailable() {
-		return !FREE_PHYSICAL_REGISTER_LIST.isEmpty();
-	}*/
-
 	private static boolean isIssueQueueFull() {
 		return ISSUE_QUEUE.size() == MAX_ISSUE_QUEUE_SIZE;
 	}
 
-
-	private static void doWriteBack() {
-		// TODO Auto-generated method stub
-		
-	}
-
-	private static void doExecution() {
-		if(isDecodeDone) {
-			isExecuteDone = true;
-			printQueue.add("Done");
-			return;
-		}
-
-		String displayData = "";
-		Instruction loadStoreInst = lsqMemory1Latch.poll();
-		if(loadStoreInst != null) {
-			//processLoadStore(load
-		}
-	}
-
-	private static void doSelection() {
-		if(isDecodeDone) {
-			printQueue.add("Done");
-			return;
-		}
-
-		Instruction iqInstruction = selectInstructionForExecutionFromIQ();
-		Instruction lsqInstruction = selectInstructionForExecutionFromLSQ();
-
-		if(iqInstruction != null) {
-			//Go for execution
-			FunctionalUnitType fuType = iqInstruction.getFuType();
-			if(INTEGER_FU.equalsIgnoreCase(fuType.getValue())) {
-				issueQueueIntegerFuLatch.add(iqInstruction);
-			} else {
-				issueQueueMultiplyFuLatch.add(iqInstruction);
-			}
-		}
-
-		if(lsqInstruction != null) {
-			//Go for execution
-			lsqMemory1Latch.add(lsqInstruction);
-		}
-
-	}
-
-	private static Instruction selectInstructionForExecutionFromIQ() {
-		int instIndex = -1;
-		for(int i = 0; i < ISSUE_QUEUE.size(); i++) {
-			Instruction inst = ISSUE_QUEUE.get(i);
-			if(inst.isValid() && isFUAvalaible(inst)) {
-				instIndex = i;
-				break;
-			}
-		}
-
-		if(instIndex != -1) {
-			return ISSUE_QUEUE.remove(instIndex);
-		}
-
-		return null;
-	}
-
-	private static Instruction selectInstructionForExecutionFromLSQ() {
-		if(!LSQ.isEmpty()) {
-			Instruction inst = LSQ.get(0);
-			if(inst.isValid() && isFUAvalaible(inst)) {
-				return LSQ.remove(0);
-			}
-		}
-		return null;
-	}
-
-	private static boolean isFUAvalaible(Instruction inst) {
-		FunctionalUnitType fuType = inst.getFuType();
-		
-		return ((INTEGER_FU.equalsIgnoreCase(fuType.getValue()) && isIntegerFuFree)
-				|| (MULTIPLY_FU.equalsIgnoreCase(fuType.getValue()) && isMultiplyFuFree)
-				|| (MEMORY_FU.equalsIgnoreCase(fuType.getValue()) && isMemoryFuFree));
-	}
 }

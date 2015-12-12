@@ -2,25 +2,34 @@ package edu.binghamton.my.common;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+
+import edu.binghamton.my.model.FunctionalUnitType;
+import edu.binghamton.my.model.Instruction;
+import edu.binghamton.my.model.InstructionType;
+import edu.binghamton.my.model.RenameTableEntry;
 
 public class Utility {
 
 	public static void display(LinkedList<String> printQueue, Map<String, Integer> registerFileMap, Integer[] memoryArray) {
 		displayHeader();
 		int size = printQueue.size();
-		int noOfCycles = size / 5;
+		int noOfCycles = size / 9;
 
 		for(int i = 0; i < noOfCycles; i++) {
-			System.out.print("|" + justify(String.valueOf((i + 1))) + "|");
+			System.out.print("|" + justify(printQueue.poll()) + "|");
+			System.out.print(justify(printQueue.poll()) + "|");
+			System.out.print(justify(printQueue.poll()) + "|");
+			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.println(justify(printQueue.poll()) + "|");
-			System.out.println(repeat("-", 156));
+			System.out.println(repeat("-", 153));
 		}
 
 		System.out.println("\nRegister Content");
@@ -56,9 +65,9 @@ public class Utility {
 	}
 
 	public static void displayHeader() {
-		System.out.println(repeat("-", 156));
-		System.out.println("|" + justify("Cycle") + "|" + justify("FETCH") + "|" + justify("DECODE") + "|" + justify("EXECUTE") + "|" + justify("MEMORY") + "|" + justify("WRITE-BACK") + "|");
-		System.out.println(repeat("-", 156));
+		System.out.println(repeat("-", 153));
+		System.out.println("|" + justify("FETCH-1") + "|" + justify("FETCH-2") + "|" + justify("DECODE") + "|" + justify("INTEGER") + "|" + justify("MULTIPLY") + "|" + justify("MEMORY-1") + "|" + justify("MEMORY-2") + "|" + justify("MEMORY-3") + "|" + justify("Commit") + "|");
+		System.out.println(repeat("-", 153));
 	}
 
 	public static String repeat(String data, int numberOfRepeatation) {
@@ -90,11 +99,77 @@ public class Utility {
 	}
 
 	public static String justify(String data) {
-		int space = 25;
+		int space = 16;
 		return justify(data, space);
 	}
 
 	public static void echo(String data) {
 		System.out.println(data);
+	}
+
+	public static Instruction getInstructionObject(String instruction) {
+		String[] parts = instruction.split(" ");
+		InstructionType type = InstructionType.getInstructionType(instruction);
+
+		Instruction instructObj = new Instruction();
+		instructObj.setOpCode(type);
+		instructObj.setFuType(FunctionalUnitType.getFunctionalUnitType(type.getValue()));
+
+		if(parts.length > 1) {
+			instructObj.setDestRegName(parts[1]);
+			instructObj.setNoOfSources(0);
+		}
+
+		if(parts.length > 2) {
+			instructObj.setSrc1RegName(parts[2]);
+			instructObj.setNoOfSources(1);
+		}
+
+		if(parts.length > 3) {
+			instructObj.setSrc2RegName(parts[3]);
+			instructObj.setNoOfSources(2);
+		}
+
+		return instructObj;
+	}
+
+	public static void dispatchToRob(Instruction instruction, CircularQueue ROB) {
+		int robSlotId = ROB.getNextSlotIndex();
+		instruction.setRobSlotId(robSlotId);
+		ROB.add(instruction);
+	}
+
+	public static void dispatchToIQ(Instruction instruction, List<Instruction> ISSUE_QUEUE) {
+		ISSUE_QUEUE.add(instruction);
+	}
+
+	public static void dispatchToLSQ(Instruction instruction, List<Instruction> LSQ) {
+		LSQ.add(instruction);
+	}
+
+	public static Instruction getEntryFromROBBySlotId(int slotId, CircularQueue ROB) {
+		Iterator<Instruction> iterator = ROB.iterator();
+
+		while(iterator.hasNext()) {
+			Instruction instruction = iterator.next();
+			if(instruction.getRobSlotId() == slotId) {
+				return instruction;
+			}
+		}
+		return null;
+	}
+
+	public static void updateRenameTable(Instruction instruction, Map<String, RenameTableEntry> RENAME_TABLE, boolean isCommitted) {
+		RenameTableEntry entry = RENAME_TABLE.get(instruction.getDestRegName());
+		if(isCommitted) {
+			//src_bit = 0
+			entry.setSrcBit(0);
+			entry.setRegisterSrc(null);
+		} else {
+			//src_bit = 1
+			//src = ROB_Slot_ID
+			entry.setSrcBit(1);
+			entry.setRegisterSrc(String.valueOf(instruction.getRobSlotId()));
+		}
 	}
 }

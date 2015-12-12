@@ -72,8 +72,12 @@ public final class CircularQueue extends AbstractCollection<Instruction> {
     return true;
   }
 
-  public Object remove() {
-    Object obj;
+  public int getHeadIndex() {
+	  return consumerIndex;
+  }
+
+  public Instruction remove() {
+    Instruction obj;
     
     if (size == 0) return null;
     
