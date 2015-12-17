@@ -18,25 +18,45 @@ public class Instruction {
 
 	private String src1RegName;
 
-	private Integer src1Value;
+	private int src1Value = -1;
 
 	private boolean isSrc2Ready;
 
 	private String src2RegName;
 
-	private Integer src2Value;
+	private int src2Value = -1;
 
 	private boolean isDestReady;
 
 	private String destRegName;
 
-	private Integer destinationValue;
+	private int destinationValue = -1;
 
 	private int multiplyLatencyCount;
 
 	private int noOfSources;
 
 	private String stringRepresentation;
+
+	private boolean isToBeSqaushed;
+
+	private boolean branchPredictionTaken;
+
+	public boolean isBranchPredictionTaken() {
+		return branchPredictionTaken;
+	}
+
+	public void setBranchPredictionTaken(boolean branchPrediction) {
+		this.branchPredictionTaken = branchPrediction;
+	}
+
+	public boolean isToBeSqaushed() {
+		return isToBeSqaushed;
+	}
+
+	public void setToBeSqaushed(boolean isToBeSqaushed) {
+		this.isToBeSqaushed = isToBeSqaushed;
+	}
 
 	public int getNoOfSources() {
 		return noOfSources;
@@ -46,27 +66,27 @@ public class Instruction {
 		this.noOfSources = noOfSources;
 	}
 
-	public Integer getSrc1Value() {
+	public int getSrc1Value() {
 		return src1Value;
 	}
 
-	public void setSrc1Value(Integer src1Value) {
+	public void setSrc1Value(int src1Value) {
 		this.src1Value = src1Value;
 	}
 
-	public Integer getSrc2Value() {
+	public int getSrc2Value() {
 		return src2Value;
 	}
 
-	public void setSrc2Value(Integer src2Value) {
+	public void setSrc2Value(int src2Value) {
 		this.src2Value = src2Value;
 	}
 
-	public Integer getDestinationValue() {
+	public int getDestinationValue() {
 		return destinationValue;
 	}
 
-	public void setDestinationValue(Integer destinationValue) {
+	public void setDestinationValue(int destinationValue) {
 		this.destinationValue = destinationValue;
 	}
 

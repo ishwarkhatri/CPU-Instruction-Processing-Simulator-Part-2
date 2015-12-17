@@ -13,13 +13,13 @@ import edu.binghamton.my.processor.APEXProcessor;
 public class APEXSimulatorRunner {
 
 	public static void main(String[] args) {
-		/*if(args.length == 0) {
+		if(args.length == 0) {
 			System.out.println("Instruction file name absent!!!");
 			System.exit(1);
-		}*/
+		}
 
 		Scanner scan = new Scanner(System.in);
-		File file = new File("instructions.txt");//args[0]);
+		File file = new File(args[0]);
 
 		while(true) {
 			displaySimulatorMenu();

@@ -14,7 +14,8 @@ import edu.binghamton.my.model.RenameTableEntry;
 
 public class Utility {
 
-	public static void display(LinkedList<String> printQueue, Map<String, Integer> registerFileMap, Integer[] memoryArray) {
+	public static void display(LinkedList<String> printQueue, Map<String, Integer> registerFileMap, Integer[] memoryArray,
+								List<Instruction> issueQueue, List<Instruction> lsq, CircularQueue rob, Map<String, RenameTableEntry> rt) {
 		displayHeader();
 		int size = printQueue.size();
 		int noOfCycles = size / 9;
@@ -30,6 +31,54 @@ public class Utility {
 			System.out.print(justify(printQueue.poll()) + "|");
 			System.out.println(justify(printQueue.poll()) + "|");
 			System.out.println(repeat("-", 153));
+		}
+
+		if(issueQueue.isEmpty()) {
+			System.out.println("\nAll instructions processed from IQ.");
+		} else {
+			System.out.println("\nInstructions pending in IQ");
+			boolean isPresent = false;
+			for(Instruction iqEntry : issueQueue) {
+				if(!iqEntry.isToBeSqaushed()) {
+					System.out.println(iqEntry.getStringRepresentation());
+					isPresent = true;
+				}
+			}
+			if(!isPresent) {
+				System.out.println("\nAll instructions processed from IQ.");
+			}
+		}
+
+		if(lsq.isEmpty()) {
+			System.out.println("\nAll instructions processed from LSQ");
+		} else {
+			System.out.println("\nInstructions pending in LSQ");
+			boolean isPresent = false;
+			for(Instruction lsqEntry : lsq) {
+				if(!lsqEntry.isToBeSqaushed()) {
+					System.out.println(lsqEntry.getStringRepresentation());
+					isPresent = true;
+				}
+			}
+			if(!isPresent) {
+				System.out.println("\nAll instructions processed from LSQ");
+			}
+		}
+
+		if(rob.isEmpty()) {
+			System.out.println("\nAll instructions processed from RoB");
+		} else {
+			System.out.println("\nInstructions pending in RoB for commit");
+			boolean isPresent = false;
+			for(Instruction instruction : rob) {
+				if(!instruction.isToBeSqaushed()) {
+					System.out.println(instruction.getStringRepresentation());
+					isPresent = true;
+				}
+			}
+			if(!isPresent) {
+				System.out.println("\nAll instructions processed from RoB");
+			}
 		}
 
 		System.out.println("\nRegister Content");
@@ -133,9 +182,11 @@ public class Utility {
 		return instructObj;
 	}
 
+	
+
 	public static void dispatchToRob(Instruction instruction, CircularQueue ROB) {
-		int robSlotId = ROB.getNextSlotIndex();
-		instruction.setRobSlotId(robSlotId);
+		int lastRobSlotID = ROB.getNextSlotIndex();
+		instruction.setRobSlotId(lastRobSlotID);
 		ROB.add(instruction);
 	}
 

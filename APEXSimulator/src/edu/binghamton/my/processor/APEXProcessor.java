@@ -8,7 +8,6 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Queue;
 
 import static edu.binghamton.my.common.Constants.*;
@@ -22,7 +21,6 @@ import edu.binghamton.my.model.RenameTableEntry;
 public class APEXProcessor {
 	private static Integer PC = 20000;
 	private static Integer UPDATED_PC = 0;
-	private static String[] lastTwoInstructions = new String[2];
 	private static LinkedList<String> printQueue = new LinkedList<>();
 	private static Map<String, Integer> REGISTER_FILE = new HashMap<>();
 	private static Queue<Instruction> fetchFetchLatch = new LinkedList<>();
@@ -37,27 +35,22 @@ public class APEXProcessor {
 	private static Queue<Instruction> multiplyForwardingLatch = new LinkedList<>();
 	private static List<String> instructionList = new ArrayList<>(PC);
 	private static Integer[] MEMORY_ARRAY = new Integer[10000];
-	private static String lastFetchedInstruction;
-	private static boolean isFetch1Done, isFetch2Done, isDecodeDone, isExecuteDone, isMemoryDone, isWriteBackDone, isIntegerFuFree, isMultiplyFuFree, isMemoryFuFree;
-	private static boolean BRANCH_TAKEN = false;
+	private static boolean isFetch1Done, isFetch2Done, isMultiplyFuFree;
 	private static boolean JUMP_DETECTED = false;
 	private static boolean INVALID_PC = false;
 	private static boolean HALT_ALERT;
-	private static boolean ZERO_FLAG;
 	private static List<Instruction> LSQ = new ArrayList<>();
 	private static List<Instruction> ISSUE_QUEUE = new ArrayList<>();
-	private static List<String> FREE_PHYSICAL_REGISTER_LIST = new ArrayList<>();
-	private static Map<String, String> ARCHITECTURAL_TO_PHYSICAL_MAP = new HashMap<>();
 	private static Map<String, RenameTableEntry> RENAME_TABLE = new HashMap<>();
 	private static CircularQueue ROB = new CircularQueue();
+	private static int lastRobSlotID;
+	private static boolean BRANCH_PREDICTED;
 
 	public static void init(File file) {
 		echo("\nSet PC to 20000");
 		PC = 20000;
 
 		instructionList = FileIO.loadFile(file, PC);
-
-		lastTwoInstructions[0] = lastTwoInstructions[1] = "";
 
 		echo("Initialize Memory...");
 		for(int i = 0; i < MEMORY_ARRAY.length; i++)
@@ -74,25 +67,30 @@ public class APEXProcessor {
 			RENAME_TABLE.put(regName, rte);
 		}
 
+		//Add X register to Register file
+		REGISTER_FILE.put("X", 0);
+		RenameTableEntry rte = new RenameTableEntry();
+		rte.setSrcBit(0);
+		rte.setRegisterSrc(null);
+		RENAME_TABLE.put("X", rte);
+
 		echo("Reset flags...");
 		isMultiplyFuFree = true;
-		isFetch1Done = isFetch2Done = isDecodeDone = isExecuteDone = isMemoryDone = isWriteBackDone = false;
+		isFetch1Done = isFetch2Done = false;
 		HALT_ALERT = false;
-		BRANCH_TAKEN = false;
 		JUMP_DETECTED = false;
-		ZERO_FLAG = false;
 		echo("\nSimulator state intialized successfully");
 	}
 
 	public static void displaySimulationResult() {
-		display(printQueue, REGISTER_FILE, MEMORY_ARRAY);
+		display(printQueue, REGISTER_FILE, MEMORY_ARRAY, ISSUE_QUEUE, LSQ, ROB, RENAME_TABLE);
 	}
 	
 	public static void simulate(int cycleCount) {
 		int cycle = 0;
 		LinkedList<String> tempList = new LinkedList<>();
 		while(cycle != cycleCount) {
-			if(INVALID_PC || (HALT_ALERT && isFetch1Done && isFetch2Done && isDecodeDone && isExecuteDone  && isWriteBackDone)) {
+			if(INVALID_PC) {
 				break;
 			}
 
@@ -106,16 +104,13 @@ public class APEXProcessor {
 				tempList.add(printQueue.removeLast());
 
 			cycle++;
-
 		}
+
 		printQueue.addAll(tempList);
 
-		if(cycle != cycleCount && (INVALID_PC ||HALT_ALERT)) {
+		if(INVALID_PC) {
 			displaySimulationResult();
-			if(HALT_ALERT)
-				echo("\nSimulation ended due to HALT instruction...");
-			if(INVALID_PC)
-				echo("\nSimulation ended due to bad PC value..." + PC);
+			echo("\nSimulation ended due to bad PC value..." + PC);
 			System.exit(0);
 		}
 	}
@@ -137,14 +132,18 @@ public class APEXProcessor {
 
 		if(isReadyToCommit) {
 			Instruction instruction = ROB.remove();
-			int destValue = instruction.getDestinationValue();
-			String destRegName = instruction.getDestRegName();
-			REGISTER_FILE.put(destRegName, destValue);
-			updateRenameTable(instruction, RENAME_TABLE, true);
-			if(STORE_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+			if(isBranchInstruction(instruction)) {
 				printQueue.add("--");
 			} else {
-				printQueue.add(destRegName + " = " + destValue);
+				int destValue = instruction.getDestinationValue();
+				String destRegName = instruction.getDestRegName();
+				REGISTER_FILE.put(destRegName, destValue);
+				updateRenameTable(instruction, RENAME_TABLE, true);
+				if(STORE_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+					printQueue.add("--");
+				} else {
+					printQueue.add(destRegName + " = " + destValue);
+				}
 			}
 		} else {
 			printQueue.add("--");
@@ -152,44 +151,68 @@ public class APEXProcessor {
 	}
 
 	private static void doFetch1() {
-		if(!fetchFetchLatch.isEmpty()) {
+		if(!fetchFetchLatch.isEmpty() || HALT_ALERT) {
 			printQueue.add("--");
-		} else if(PC == instructionList.size()) {
-			isFetch1Done = true;
-			printQueue.add("--");
-		} else {
-			if(PC > instructionList.size()) {//PC is updated by BZ/BNZ/JUMP instructions
-				echo("Invalid PC value detected: " + PC);
-				INVALID_PC = true;
-			} else {
-				String temp = instructionList.get(PC++);
+			return;
+		}
+
+		if(BRANCH_PREDICTED || JUMP_DETECTED) {
+			if(PC < instructionList.size()) {
+				String temp = instructionList.get(PC);
 				Instruction instruction = getInstructionObject(temp);
-				fetchFetchLatch.add(instruction);
-
-				/*if(HALT_ALERT) {
-					isFetchDone = true;
-					String temp = fetchDecodeLatch.poll();
-					instruction = SQUASH_INSTRUCTION + SPACE + temp;
-					fetchDecodeLatch.add(instruction);
-				}
-
-				if(BRANCH_TAKEN || JUMP_DETECTED) {
-					String temp = fetchDecodeLatch.poll();
-					instruction = SQUASH_INSTRUCTION + SPACE + temp;
-					fetchDecodeLatch.add(instruction);
-					PC = UPDATED_PC;
-					if(BRANCH_TAKEN)
-						BRANCH_TAKEN = false;
-					if(JUMP_DETECTED)
-						JUMP_DETECTED = false;
-				}*/
+				instruction.setPc(PC);
+				instruction.setToBeSqaushed(true);
 				instruction.setStringRepresentation(temp);
+				fetchFetchLatch.add(instruction);
+				PC++;
 				printQueue.add(temp);
+			} else {
+				printQueue.add("--");
 			}
-		}		
+
+			if(BRANCH_PREDICTED) {
+				PC = UPDATED_PC;
+				BRANCH_PREDICTED = false;
+			}
+
+			if(JUMP_DETECTED)
+				JUMP_DETECTED = false;
+
+			return;
+		}
+
+		if(PC == instructionList.size()) {
+			printQueue.add("--");
+			return;
+		}
+
+
+		if(PC > instructionList.size()) {//PC is updated by BZ/BNZ/JUMP instructions
+			echo("Invalid PC value detected: " + PC);
+			INVALID_PC = true;
+			return;
+		}
+
+		String temp = instructionList.get(PC);
+		Instruction instruction = getInstructionObject(temp);
+		instruction.setPc(PC);
+		fetchFetchLatch.add(instruction);
+		PC++;
+
+		if(HALT_ALERT) {
+			instruction.setToBeSqaushed(true);
+		}
+
+		instruction.setStringRepresentation(temp);
+		printQueue.add(temp);
 	}
 
 	private static void doFetch2() {
+		if(isFetch2Done && (!BRANCH_PREDICTED || !JUMP_DETECTED)) {
+			printQueue.add("--");
+			return;
+		}
+
 		if(!fetchDecodeLatch.isEmpty()) {
 			printQueue.add("--");
 			return;
@@ -205,6 +228,16 @@ public class APEXProcessor {
 			}
 		} else {
 			fetchDecodeLatch.add(instruction);
+
+			if(HALT_ALERT) {
+				isFetch2Done = true;
+				instruction.setToBeSqaushed(true);
+			}
+
+			if(BRANCH_PREDICTED || JUMP_DETECTED) {
+				instruction.setToBeSqaushed(true);
+			}
+
 			printQueue.add(instruction.getStringRepresentation());
 		}
 	}
@@ -216,17 +249,17 @@ public class APEXProcessor {
 		//Read values from ARF/PRF
 		//Dispatch to IQ & LSQ
 		if(fetchDecodeLatch.isEmpty()) {
-			if(isFetch2Done) {
-				isDecodeDone = true;
-				printQueue.add("--");
-			} else {
-				printQueue.add("--");
-			}
+			printQueue.add("--");
 			return;
 		}
 		
 		Instruction instruction = fetchDecodeLatch.poll();
 		InstructionType instructionType = instruction.getOpCode();
+
+		if(instruction.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
 
 		if(HALT_INSTRUCTION.equalsIgnoreCase(instructionType.getValue())) {
 			HALT_ALERT = true;
@@ -280,6 +313,13 @@ public class APEXProcessor {
 			break;
 
 		case LOAD:
+			decode(instruction, true, true, false);
+			if(instruction.isSrc1Ready() && instruction.isSrc2Ready()) {
+				instruction.setValid(true);
+			}
+			dispatch(instruction, issueToIQ);
+			break;
+
 		case STORE:
 			decode(instruction, true, true, true);
 			if(instruction.isSrc1Ready() && instruction.isSrc2Ready() && instruction.isDestReady()) {
@@ -288,26 +328,60 @@ public class APEXProcessor {
 			dispatch(instruction, issueToIQ);
 			break;
 
+		case BZ:
+		case BNZ:
+			int offset = Integer.parseInt(instruction.getDestRegName());
+			if(offset < 0) { //Predict branch will be taken for negative offsets
+				UPDATED_PC = instruction.getPc() + offset; //This actually means (PC + (-offset))
+				instruction.setBranchPredictionTaken(true);
+			}
+			instruction.setSrc1Value(lastRobSlotID);
+			instruction.setSrc1Ready(false);
+			instruction.setValid(false);
+			dispatch(instruction, issueToIQ);
+			BRANCH_PREDICTED = true;
+			break;
+
+		case BAL:
+		case JUMP:
+			int srcValue;
+			String reg = instruction.getDestRegName();
+			RenameTableEntry regDestRte = RENAME_TABLE.get(reg);
+			if(regDestRte.getSrcBit() == 0) { //Read values from register file
+				srcValue = REGISTER_FILE.get(reg);
+				instruction.setSrc1Value(srcValue);
+				instruction.setSrc1Ready(true);
+				instruction.setValid(true);
+			} else {
+				Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(regDestRte.getRegisterSrc()), ROB);
+				if(robInstruction.isDestReady()) {
+					srcValue = robInstruction.getDestinationValue();
+					instruction.setSrc1Value(srcValue);
+					instruction.setSrc1Ready(true);
+					instruction.setValid(true);
+				} else {
+					instruction.setSrc1Value(robInstruction.getRobSlotId());
+					instruction.setSrc1Ready(false);
+				}
+			}
+
+			if(BAL_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+				instruction.setDestRegName("X");
+			}
+
+			dispatch(instruction, issueToIQ);
+			JUMP_DETECTED = true;
+			break;
+
 		default:
 			break;
 		}
 		
-		/*if(!STORE_INSTRUCTION.equalsIgnoreCase(instructionType.getValue()) && !isFreePhysicalRegisterAvailable()) {
-			printQueue.add("No Free Phys. Reg.");
-			return;
-		}*/
-
-		//instruction = getRenamedInstruction(instruction);
-		/*if(isInstructionDependent()) {
-			//Dispatch without reading register values form PRF
-		} else {
-			//Read register values from PRF
-		}*/
 		printQueue.add(instruction.getStringRepresentation());
 	}
 
 	private static boolean isLiteral(String value) {
-		return value.charAt(0) != 'R';
+		return (value.charAt(0) != 'R' && value.charAt(0) != 'X');
 	}
 
 	private static void decode(Instruction instruction, boolean decodeSrc1, boolean decodeSrc2, boolean decodeDest) {
@@ -372,16 +446,16 @@ public class APEXProcessor {
 			if(regDestRte.getSrcBit() == 0) { //Read values from register file
 				srcValue = REGISTER_FILE.get(instruction.getDestRegName());
 				instruction.setDestinationValue(srcValue);
-				//instruction.setDestReady(true);
+				instruction.setDestReady(true);
 			} else {
 				Instruction robInstruction = getEntryFromROBBySlotId(Integer.parseInt(regDestRte.getRegisterSrc()), ROB);
 				if(robInstruction.isDestReady()) {
 					srcValue = robInstruction.getDestinationValue();
 					instruction.setDestinationValue(srcValue);
-					//instruction.setDestReady(true);
+					instruction.setDestReady(true);
 				} else {
 					instruction.setDestinationValue(robInstruction.getRobSlotId());
-					//instruction.setDestReady(false);
+					instruction.setDestReady(false);
 				}
 			}
 		}
@@ -400,11 +474,18 @@ public class APEXProcessor {
 
 		dispatchToRob(instruction, ROB);
 
+		lastRobSlotID = instruction.getRobSlotId();
+
 		if(STORE_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
 			//In case of store all are register are read. So no need to update Rename Table
+		} else if(BZ_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())
+				|| BNZ_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())
+				|| JUMP_INSTRUCTION.equalsIgnoreCase(instruction.getOpCode().getValue())) {
+			//In this case also no need to updat rename table
 		} else {
 			updateRenameTable(instruction, RENAME_TABLE, false);
 		}
+		
 	}
 
 	private static void doForwarding() {
@@ -417,7 +498,18 @@ public class APEXProcessor {
 		}
 	}
 
+	private static boolean isBranchInstruction(Instruction instruction) {
+		String opCode = instruction.getOpCode().getValue();
+		return (BZ_INSTRUCTION.equalsIgnoreCase(opCode)
+				|| BNZ_INSTRUCTION.equalsIgnoreCase(opCode)
+				|| JUMP_INSTRUCTION.equalsIgnoreCase(opCode));
+	}
+
 	private static void forwardExecutionResults(Instruction instruction) {
+		if(isBranchInstruction(instruction)) {
+			return;
+		}
+
 		for(Instruction robInst : ROB) {
 			if(!robInst.isValid()) {
 				if(!robInst.isSrc1Ready()) {
@@ -434,10 +526,22 @@ public class APEXProcessor {
 					}
 				}
 
-				if(robInst.getNoOfSources() == 1 && robInst.isSrc1Ready()) {
+				if(STORE_INSTRUCTION.equalsIgnoreCase(robInst.getOpCode().getValue()) && !robInst.isDestReady()) {
+					if(robInst.getDestinationValue() == instruction.getRobSlotId()) {
+						robInst.setDestinationValue(instruction.getDestinationValue());
+						robInst.setDestReady(true);
+					}
+				}
+
+				if((robInst.getNoOfSources() == 0 || robInst.getNoOfSources() == 1) && robInst.isSrc1Ready()) {
 					robInst.setValid(true);
-				} else if(robInst.getNoOfSources() == 2 && robInst.isSrc1Ready() && robInst.isSrc2Ready()) {
-					robInst.setValid(true);
+				} else if(robInst.getNoOfSources() == 2) {
+					if(STORE_INSTRUCTION.equalsIgnoreCase(robInst.getOpCode().getValue())) {
+						if(robInst.isSrc1Ready() && robInst.isSrc2Ready() && robInst.isDestReady())
+							robInst.setValid(true);
+					} else if(robInst.isSrc1Ready() && robInst.isSrc2Ready()) {
+							robInst.setValid(true);
+					}
 				}
 			}
 		}
@@ -454,16 +558,17 @@ public class APEXProcessor {
 
 	private static void executeInteger() {
 		if(issueQueueIntegerFuLatch.isEmpty()) {
-			if(ISSUE_QUEUE.isEmpty()) {
-				printQueue.add("--");
-			} else {
-				printQueue.add("--");
-			}
+			printQueue.add("--");
 			return;
 		}
 
 
 		Instruction intInst = issueQueueIntegerFuLatch.poll();
+		if(intInst.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
+
 		String opCode = intInst.getOpCode().getValue();
 		int result = 0;
 		switch (opCode) {
@@ -486,9 +591,61 @@ public class APEXProcessor {
 		case EX_OR_INSTRUCTION:
 			result = intInst.getSrc1Value() ^ intInst.getSrc2Value();
 			break;
+
+		case BZ_INSTRUCTION:
+			if(intInst.getSrc1Value() == 0) {
+				if(intInst.isBranchPredictionTaken()) {
+					//Then it is OK
+				} else {
+					//Flush wrongly fetched instructions
+					flushWrongPredictedInstructions(intInst);
+					PC = intInst.getPc() + Integer.parseInt(intInst.getDestRegName());
+				}
+			} else {
+				if(intInst.isBranchPredictionTaken()) {
+					//Flush wrongly fetched instructions
+					flushWrongPredictedInstructions(intInst);
+					PC = intInst.getPc() + 1;
+				} else {
+					//Then it is OK
+				}
+			}
+			break;
+
+		case BNZ_INSTRUCTION:
+			if(intInst.getSrc1Value() != 0) {
+				if(intInst.isBranchPredictionTaken()) {
+					//Then it is OK
+				} else {
+					//Flush wrongly fetched instructions
+					flushWrongPredictedInstructions(intInst);
+					PC = intInst.getPc() + Integer.parseInt(intInst.getDestRegName());
+				}
+			} else {
+				if(intInst.isBranchPredictionTaken()) {
+					//Flush wrongly fetched instructions
+					flushWrongPredictedInstructions(intInst);
+					PC = intInst.getPc() + 1;
+				} else {
+					//Then it is OK
+				}
+			}
+			break;
+
+		case JUMP_INSTRUCTION:
+			PC = intInst.getSrc1Value() + Integer.parseInt(intInst.getSrc1RegName());
+			break;
+
+		case BAL_INSTRUCTION:
+			PC = intInst.getSrc1Value() + Integer.parseInt(intInst.getSrc1RegName());
+			result = intInst.getPc(); // current PC value has to be saved in X register (will be done in commit)
+			intInst.setDestRegName("X");
+			break;
+
 		default:
 			break;
 		}
+
 		intInst.setDestinationValue(result);
 		intInst.setDestReady(true);
 		intInst.setValid(true);
@@ -497,17 +654,52 @@ public class APEXProcessor {
 		printQueue.add(intInst.getStringRepresentation());
 	}
 
+	private static int incrementCircularQueueIndex(int currIndex) {
+		if(currIndex == (ROB.capacity() - 1)) {
+			return 0;
+		}
+
+		return ++currIndex;
+	}
+
+	private static void flushWrongPredictedInstructions(Instruction branchInstruction) {
+		int bzInsRobId = branchInstruction.getRobSlotId();
+		bzInsRobId = incrementCircularQueueIndex(bzInsRobId);
+
+		for(Instruction robInst : ROB) {
+			if(bzInsRobId == ROB.getNextSlotIndex()) {
+				break;
+			}
+
+			if(robInst.getRobSlotId() == bzInsRobId) {
+				robInst.setToBeSqaushed(true);
+			}
+
+			bzInsRobId = incrementCircularQueueIndex(bzInsRobId);
+		}
+
+		//Clear instructions that are already fetched
+		for(Instruction i : fetchFetchLatch) {
+			i.setToBeSqaushed(true);
+		}
+
+		for(Instruction i : fetchDecodeLatch) {
+			i.setToBeSqaushed(true);
+		}
+	}
+
 	private static void executeMultiply() {
 		if(issueQueueMultiplyFuLatch.isEmpty()) {
-			if(ISSUE_QUEUE.isEmpty()) {
-				printQueue.add("--");
-			} else {
-				printQueue.add("--");
-			}
+			printQueue.add("--");
 			return;
 		}
 
 		Instruction mulInst = issueQueueMultiplyFuLatch.poll();
+		if(mulInst.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
+
 		int latencyCount = mulInst.getMultiplyLatencyCount();
 		
 		if(latencyCount == 0) {
@@ -537,6 +729,11 @@ public class APEXProcessor {
 		}
 
 		Instruction loadStoreInst = memory2memory3Latch.poll();
+		if(loadStoreInst.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
+
 		loadStoreInst.setDestReady(true);
 		loadStoreInst.setValid(true);
 
@@ -566,6 +763,11 @@ public class APEXProcessor {
 		}
 
 		Instruction inst = memory1memory2Latch.poll();
+		if(inst.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
+
 		memory2memory3Latch.add(inst);
 		printQueue.add(inst.getStringRepresentation());
 	}
@@ -577,7 +779,12 @@ public class APEXProcessor {
 		}
 
 		Instruction loadStoreInst = lsqMemory1Latch.poll();
-		if(LOAD_INSTRUCTION.equalsIgnoreCase(loadStoreInst.getOpCode().getValue())) {
+		if(loadStoreInst.isToBeSqaushed()) {
+			printQueue.add("--");
+			return;
+		}
+
+		/*if(LOAD_INSTRUCTION.equalsIgnoreCase(loadStoreInst.getOpCode().getValue())) {
 			int src1 = loadStoreInst.getSrc1Value();
 			int src2 = loadStoreInst.getSrc2Value();
 			int addr = src1 + src2;
@@ -588,13 +795,16 @@ public class APEXProcessor {
 			int src2 = loadStoreInst.getSrc2Value();
 			int addr = src1 + src2;
 			MEMORY_ARRAY[addr] = loadStoreInst.getDestinationValue();//Update/Insert memory location
-		}
+		}*/
 
 		memory1memory2Latch.add(loadStoreInst);
 		printQueue.add(loadStoreInst.getStringRepresentation());
 	}
 
 	private static void doSelection() {
+		removeSquashInstructionsFromIQ();
+		removeSquashInstructionsFromLSQ();
+
 		Instruction integerInstruction = selectIntegerInstructionFromIQ();
 		Instruction multiplyInstruction = selectMultiplyInstructionFromIQ();
 		Instruction memoryInstruction = selectInstructionForExecutionFromLSQ();
@@ -616,6 +826,34 @@ public class APEXProcessor {
 
 	}
 
+	private static void removeSquashInstructionsFromIQ() {
+		List<Integer> instToBeSquashed = new ArrayList<>();
+		for(int i = 0; i < ISSUE_QUEUE.size(); i++) {
+			Instruction inst = ISSUE_QUEUE.get(i);
+			if(inst.isToBeSqaushed()) {
+				instToBeSquashed.add(i);
+			}
+		}
+
+		for(Integer i : instToBeSquashed) {
+			ISSUE_QUEUE.remove(i);
+		}
+	}
+
+	private static void removeSquashInstructionsFromLSQ() {
+		List<Integer> instToBeSquashed = new ArrayList<>();
+		for(int i = 0; i < LSQ.size(); i++) {
+			Instruction inst = LSQ.get(i);
+			if(inst.isToBeSqaushed()) {
+				instToBeSquashed.add(i);
+			}
+		}
+
+		for(Integer i : instToBeSquashed) {
+			LSQ.remove(i);
+		}
+	}
+
 	private static Instruction selectIntegerInstructionFromIQ() {
 		int instIndex = -1;
 		Instruction selectedInstruction = null;
@@ -623,6 +861,7 @@ public class APEXProcessor {
 		for(int i = 0; i < ISSUE_QUEUE.size(); i++) {
 			Instruction inst = ISSUE_QUEUE.get(i);
 			String fuType = inst.getFuType().getValue();
+
 			if(inst.isValid() && INTEGER_FU.equalsIgnoreCase(fuType)) {
 				instIndex = i;
 				break;

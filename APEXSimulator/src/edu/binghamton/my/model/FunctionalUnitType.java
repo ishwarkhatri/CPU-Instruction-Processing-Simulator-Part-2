@@ -28,6 +28,10 @@ public enum FunctionalUnitType {
 		case AND_INSTRUCTION:
 		case OR_INSTRUCTION:
 		case HALT_INSTRUCTION:
+		case BZ_INSTRUCTION:
+		case BNZ_INSTRUCTION:
+		case JUMP_INSTRUCTION:
+		case BAL_INSTRUCTION:
 			return INTEGER;
 
 		case LOAD_INSTRUCTION:
