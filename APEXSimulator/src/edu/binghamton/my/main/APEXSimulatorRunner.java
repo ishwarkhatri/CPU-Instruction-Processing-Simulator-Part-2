@@ -13,6 +13,7 @@ import edu.binghamton.my.processor.APEXProcessor;
 public class APEXSimulatorRunner {
 
 	public static void main(String[] args) {
+		//Instruction file name ("instructions.txt") has to be given as cmdline args
 		if(args.length == 0) {
 			System.out.println("Instruction file name absent!!!");
 			System.exit(1);
